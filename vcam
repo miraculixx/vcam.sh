@@ -1,0 +1,149 @@
+#!/bin/bash
+## vcam - virtual cam background for linux
+## Copyright (c) miraculixx at github.com/miraculixx
+##
+## @script.name [option]
+##
+## This uses v4l2loopback and ffmpeg to create a virtual cam and merge
+## it with a background using the chromakey filter. Thus it works best
+## with a greenscreen. Different configurations can be set up using a
+## configuration file and easily selected from the command line.
+##
+## Options:
+## --help          Display help
+## --select=VALUE  Select configuration (VALUE=/ to show menu)
+## --image=PATH    png file, PATH can be a local file or remote http:
+## --size=VALUE    size, defaults to 640x480
+## --output=VALUE  size, defaults to /dev/video4
+## --camera=VALUE  size, defaults to /dev/video2
+## --rate=VALUE    frame rate, defaults to 25
+## --overlay=VALUE overlay position x:y, defaults to 100:0
+## --crop=VALUE    crop position x:y, defaults to 200:200
+## --blurred       blur background
+## --install       install dependencies
+## --stop          stop cam
+## --status        show cam status
+## --view          view cam in browser
+## --config=PATH   config file, defaults to $HOME/.config/vcam.ini
+## --edit          edit config
+script_dir=$(dirname $(readlink -m $(type -p ${0})))
+. $script_dir/lib/easyoptions || exit
+. $script_dir/lib/parseini
+
+config=${config:-$HOME/.config/vcam.ini}
+
+function setparams() {
+  process_ini_file $config
+  # read global config
+  g_image=$(get_value global IMAGE)
+  g_size=$(get_value global SIZE)
+  g_rate=$(get_value global FRAME_RATE)
+  g_camera=$(get_value global CAMERA)
+  g_output=$(get_value global OUTPUT)
+  g_overlay=$(get_value global OVERLAY)
+  g_crop=$(get_value global CROP)
+  g_chromakey=$(get_value global CHROMAKEY)
+  # if requested, read image config
+  if [[ ! -z $select ]]; then
+    # if user selects *, show menu
+    if [[ $select == "/" ]]; then
+      sections=$(grep -E "^\[.*\]$" $config | tr -d "[]")
+      select item in $sections; do
+        if [[ ! -z $item ]]; then
+          select=$item
+          break
+        fi
+      done
+    fi
+    # process selection
+    image=$(get_value $select IMAGE)
+    size=$(get_value $select SIZE)
+    rate=$(get_value $select FRAME_RATE)
+    camera=$(get_value $select CAMERA)
+    output=$(get_value $select OUTPUT)
+    overlay=$(get_value $select OVERLAY)
+    crop=$(get_value $select CROP)
+    chromakey=$(get_value global CHROMAKEY)
+  fi
+  # download image value if neeeded
+  if [[ $image == http* ]]; then
+    wget $image -O /tmp/vbcam_background.png
+    image=/tmp/vbcam_background.png
+  fi
+  # apply image config, defaults to global
+  eval IMAGE=${image:-$g_image}
+  SIZE=${size:-$g_size}
+  FRAME_RATE=${rate:-$g_rate}
+  CAMERA=${camera:-$g_camera}
+  OUTPUT=${output:-$g_output}
+  OVERLAY=${overlay:-$g_overlay}
+  CROP=${crop:-$g_crop}
+  CHROMAKEY=${chromakey:-$g_chromakey}
+}
+
+function runcam() {
+  FILTER_NOBLUR="[1:v]chromakey=$CHROMAKEY[raw];[raw]crop=$CROP[ckout];[0:v][ckout]overlay=$OVERLAY[out]"
+  FILTER_BLUR="[1:v]chromakey=$CHROMAKEY[raw];[raw]crop=$CROP[ckout];[0:v]avgblur=sizeX=10[blurred];[blurred][ckout]overlay=$OVERLAY[out]"
+  FILTER=$([ -z $blurred ] && echo $FILTER_NOBLUR || echo $FILTER_BLUR)
+  ffmpeg -thread_queue_size 5 -filter_complex_threads 5 -y -hide_banner \
+    -i $IMAGE -f v4l2 -pix_fmt mjpeg \
+    -framerate $FRAME_RATE -video_size $SIZE \
+    -i $CAMERA -pix_fmt mjpeg \
+    -filter_complex $FILTER \
+    -map "[out]" \
+    -pix_fmt yuyv422 \
+    -f v4l2 $OUTPUT 2>/tmp/camlog.txt
+}
+
+function stop() {
+  killall ffmpeg >/dev/null 2>&1
+}
+
+function browse() {
+  #xdg-open http://localhost:8000/index.html
+  #python3 -m http.server -d $script_dir/htm
+  xdg-open $script_dir/html/index.html 2>/tmp/viewlog.txt
+}
+
+function install() {
+  sudo apt-get install v4l2loopback-dkms
+  sudo apt install ffmpeg
+  sudo apt install v4l-utils
+  mkdir -p $HOME/.config
+  sudo ln -fs $script_dir/vcam /usr/local/bin/vcam
+  if [[ ! -f $config ]]; then
+    cp $script_dir/vcam.ini $HOME/.config
+    cp $script_dir/images $HOME/Pictures
+  else
+    echo "Config is already setup in $config. Run vcam --edit to modify."
+  fi
+}
+
+function load_video() {
+  # make sure access is granted to user processes, e.g. chrome, zoom
+  sudo modprobe v4l2loopback -r && sudo modprobe v4l2loopback devices=1 video_nr=4 exclusive_caps=1 card_label="vcam"
+  sudo chmod 660 $OUTPUT
+}
+
+function main() {
+  setparams
+
+  if [[ ! -z $install ]]; then
+    install
+  elif [[ ! -z $stop ]]; then
+    stop
+  elif [[ ! -z $status ]]; then
+    ps aux | grep ffmpeg
+    tail -f /tmp/camlog.txt
+  elif [[ ! -z $view ]]; then
+    browse
+  elif [[ ! -z $edit ]]; then
+    nano $config
+  else
+    load_video
+    stop
+    runcam &
+  fi
+}
+
+main
