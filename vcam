@@ -20,6 +20,7 @@
 ## --overlay=VALUE overlay position x:y, defaults to 100:0
 ## --crop=VALUE    crop position x:y, defaults to 200:200
 ## --blurred       blur background
+## --flip          flip horizontally
 ## --install       install dependencies
 ## --stop          stop cam
 ## --status        show cam status
@@ -43,6 +44,7 @@ function setparams() {
   g_overlay=$(get_value global OVERLAY)
   g_crop=$(get_value global CROP)
   g_chromakey=$(get_value global CHROMAKEY)
+  g_flip=$(get_value global FLIP)
   # if requested, read image config
   if [[ ! -z $select ]]; then
     # if user selects *, show menu
@@ -56,41 +58,46 @@ function setparams() {
       done
     fi
     # process selection
-    image=$(get_value $select IMAGE)
-    size=$(get_value $select SIZE)
-    rate=$(get_value $select FRAME_RATE)
-    camera=$(get_value $select CAMERA)
-    output=$(get_value $select OUTPUT)
-    overlay=$(get_value $select OVERLAY)
-    crop=$(get_value $select CROP)
-    chromakey=$(get_value global CHROMAKEY)
+    c_image=$(get_value $select IMAGE)
+    c_size=$(get_value $select SIZE)
+    c_rate=$(get_value $select FRAME_RATE)
+    c_camera=$(get_value $select CAMERA)
+    c_output=$(get_value $select OUTPUT)
+    c_overlay=$(get_value $select OVERLAY)
+    c_crop=$(get_value $select CROP)
+    c_chromakey=$(get_value global CHROMAKEY)
+    c_flip=$(get_value global FLIP)
   fi
-  # download image value if neeeded
+  # download image value if needed
   if [[ $image == http* ]]; then
     wget $image -O /tmp/vbcam_background.png
     image=/tmp/vbcam_background.png
   fi
-  # apply image config, defaults to global
-  eval IMAGE=${image:-$g_image}
-  SIZE=${size:-$g_size}
-  FRAME_RATE=${rate:-$g_rate}
-  CAMERA=${camera:-$g_camera}
-  OUTPUT=${output:-$g_output}
-  OVERLAY=${overlay:-$g_overlay}
-  CROP=${crop:-$g_crop}
-  CHROMAKEY=${chromakey:-$g_chromakey}
+  # apply flags, image config, defaults to global
+  eval IMAGE=${image:-${c_image:-$g_image}}
+  SIZE=${size:-${c_size:-$g_size}}
+  FRAME_RATE=${rate:-${c_rate:-$g_rate}}
+  CAMERA=${camera:-${c_camera:-$g_camera}}
+  OUTPUT=${output:-${c_output:-$g_output}}
+  OVERLAY=${overlay:-${c_overlay:-$g_overlay}}
+  CROP=${crop:-${c_crop:-$g_crop}}
+  CHROMAKEY="${chromakey:-${c_chromakey:-$g_chromakey}}"
+  THREADS=2
+  FLIP=${flip:-${c_flip:-$g_flip}}
 }
 
 function runcam() {
   FILTER_NOBLUR="[1:v]chromakey=$CHROMAKEY[raw];[raw]crop=$CROP[ckout];[0:v][ckout]overlay=$OVERLAY[out]"
   FILTER_BLUR="[1:v]chromakey=$CHROMAKEY[raw];[raw]crop=$CROP[ckout];[0:v]avgblur=sizeX=10[blurred];[blurred][ckout]overlay=$OVERLAY[out]"
   FILTER=$([ -z $blurred ] && echo $FILTER_NOBLUR || echo $FILTER_BLUR)
-  ffmpeg -thread_queue_size 5 -filter_complex_threads 5 -y -hide_banner \
+  FILTER=$([ ! -z $FLIP ] && echo "$FILTER;[out]hflip[vid]" || echo $FILTER)
+  VMAP=$([ -z $FLIP ] && echo "[out]" || echo "[vid]")
+  ffmpeg -thread_queue_size $THREADS -filter_complex_threads $THREADS -y -hide_banner \
     -i $IMAGE -f v4l2 -pix_fmt mjpeg \
     -framerate $FRAME_RATE -video_size $SIZE \
     -i $CAMERA -pix_fmt mjpeg \
     -filter_complex $FILTER \
-    -map "[out]" \
+    -map "$VMAP" \
     -pix_fmt yuyv422 \
     -f v4l2 $OUTPUT 2>/tmp/camlog.txt
 }
